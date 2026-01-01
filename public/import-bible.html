@@ -405,10 +405,6 @@
   </div>
 
   <script>
-    // Supabase configuration (public anon key is safe to expose)
-    const SUPABASE_URL = 'https://xlaqsdmprxpcyrutfjxb.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhsYXFzZG1wcnhwY3lydXRmanhi.Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzUzMzUzOTUsImV4cCI6MjA1MDkxMTM5NX0.RfANiU3iCVjI_P3hHk-l1qMCLZcMTNkz4DPVS2RzPKo';
-
     const files = {
       kjv: null,
       web: null,
@@ -458,7 +454,7 @@
         // Parse Bible JSON into verse records
         const verses = [];
         
-        // Handle array format (like our downloaded files)
+        // Handle array format
         if (Array.isArray(bibleData)) {
           bibleData.forEach(book => {
             const bookName = book.book;
@@ -480,59 +476,47 @@
           throw new Error('No verses found in file');
         }
 
-        status.textContent = `Parsed ${verses.length.toLocaleString()} verses. Uploading to database...`;
-        button.innerHTML = '<span class="spinner"></span> Uploading...';
+        status.textContent = `Parsed ${verses.length.toLocaleString()} verses. Starting upload...`;
 
-        // Check if version already exists
-        const checkResponse = await fetch(
-          `${SUPABASE_URL}/rest/v1/bible_verses?version=eq.${versionCode}&select=version`,
-          {
+        // Upload in chunks of 500 verses (well under 4.5MB limit)
+        const chunkSize = 500;
+        let uploaded = 0;
+
+        for (let i = 0; i < verses.length; i += chunkSize) {
+          const chunk = verses.slice(i, i + chunkSize);
+          const isFirstBatch = i === 0;
+
+          button.innerHTML = '<span class="spinner"></span> Uploading...';
+          const percent = Math.round((i / verses.length) * 100);
+          status.textContent = `Uploading: ${i.toLocaleString()} / ${verses.length.toLocaleString()} verses (${percent}%)`;
+
+          const response = await fetch('/api/upload-bible-chunk', {
+            method: 'POST',
             headers: {
-              'apikey': SUPABASE_ANON_KEY,
-              'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-              'Range': '0-0'
-            }
-          }
-        );
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              verses: chunk,
+              version: versionCode,
+              versionName: versionNames[version],
+              isFirstBatch
+            })
+          });
 
-        if (checkResponse.ok) {
-          const existing = await checkResponse.json();
-          if (existing.length > 0) {
+          const result = await response.json();
+
+          if (!result.success) {
+            throw new Error(result.error || 'Upload failed');
+          }
+
+          if (result.alreadyExists) {
             status.className = 'status success';
-            status.textContent = `✓ ${versionNames[version]} already imported`;
+            status.textContent = `✓ ${result.message} (${result.count.toLocaleString()} verses)`;
             button.innerHTML = '✓ Already Imported';
             return;
           }
-        }
 
-        // Upload in batches of 1000 verses
-        const batchSize = 1000;
-        let uploaded = 0;
-
-        for (let i = 0; i < verses.length; i += batchSize) {
-          const batch = verses.slice(i, i + batchSize);
-          
-          const response = await fetch(
-            `${SUPABASE_URL}/rest/v1/bible_verses`,
-            {
-              method: 'POST',
-              headers: {
-                'apikey': SUPABASE_ANON_KEY,
-                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-                'Content-Type': 'application/json',
-                'Prefer': 'return=minimal'
-              },
-              body: JSON.stringify(batch)
-            }
-          );
-
-          if (!response.ok) {
-            throw new Error(`Upload failed: ${response.statusText}`);
-          }
-
-          uploaded += batch.length;
-          const percent = Math.round((uploaded / verses.length) * 100);
-          status.textContent = `Uploading: ${uploaded.toLocaleString()} / ${verses.length.toLocaleString()} verses (${percent}%)`;
+          uploaded += chunk.length;
         }
 
         status.className = 'status success';
