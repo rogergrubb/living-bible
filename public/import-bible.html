@@ -405,6 +405,10 @@
   </div>
 
   <script>
+    // Supabase configuration (public anon key is safe to expose)
+    const SUPABASE_URL = 'https://xlaqsdmprxpcyrutfjxb.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhsYXFzZG1wcnhwY3lydXRmanhi.Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzUzMzUzOTUsImV4cCI6MjA1MDkxMTM5NX0.RfANiU3iCVjI_P3hHk-l1qMCLZcMTNkz4DPVS2RzPKo';
+
     const files = {
       kjv: null,
       web: null,
@@ -440,45 +444,105 @@
       const versionCode = version.toUpperCase();
 
       try {
-        // Disable button and show loading
         button.disabled = true;
-        button.innerHTML = '<span class="spinner"></span> Uploading...';
+        button.innerHTML = '<span class="spinner"></span> Reading file...';
         
         status.className = 'status info';
         status.style.display = 'block';
         status.textContent = `Reading ${versionNames[version]} file...`;
 
-        // Read file
+        // Read and parse the JSON file
         const text = await file.text();
         const bibleData = JSON.parse(text);
 
-        status.textContent = `Uploading ${versionNames[version]} to database...`;
-
-        // Upload to API
-        const response = await fetch('/api/upload-bible', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            bibleData,
-            version: versionCode,
-            versionName: versionNames[version]
-          })
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-          status.className = 'status success';
-          status.textContent = `✓ ${result.message} (${result.count.toLocaleString()} verses)`;
-          button.innerHTML = '✓ Imported';
-        } else {
-          throw new Error(result.error || 'Upload failed');
+        // Parse Bible JSON into verse records
+        const verses = [];
+        
+        // Handle array format (like our downloaded files)
+        if (Array.isArray(bibleData)) {
+          bibleData.forEach(book => {
+            const bookName = book.book;
+            (book.chapters || []).forEach((chapter, chapterIndex) => {
+              chapter.forEach((verseText, verseIndex) => {
+                verses.push({
+                  version: versionCode,
+                  book: bookName,
+                  chapter: chapterIndex + 1,
+                  verse: verseIndex + 1,
+                  text: verseText.trim()
+                });
+              });
+            });
+          });
         }
+
+        if (verses.length === 0) {
+          throw new Error('No verses found in file');
+        }
+
+        status.textContent = `Parsed ${verses.length.toLocaleString()} verses. Uploading to database...`;
+        button.innerHTML = '<span class="spinner"></span> Uploading...';
+
+        // Check if version already exists
+        const checkResponse = await fetch(
+          `${SUPABASE_URL}/rest/v1/bible_verses?version=eq.${versionCode}&select=version`,
+          {
+            headers: {
+              'apikey': SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+              'Range': '0-0'
+            }
+          }
+        );
+
+        if (checkResponse.ok) {
+          const existing = await checkResponse.json();
+          if (existing.length > 0) {
+            status.className = 'status success';
+            status.textContent = `✓ ${versionNames[version]} already imported`;
+            button.innerHTML = '✓ Already Imported';
+            return;
+          }
+        }
+
+        // Upload in batches of 1000 verses
+        const batchSize = 1000;
+        let uploaded = 0;
+
+        for (let i = 0; i < verses.length; i += batchSize) {
+          const batch = verses.slice(i, i + batchSize);
+          
+          const response = await fetch(
+            `${SUPABASE_URL}/rest/v1/bible_verses`,
+            {
+              method: 'POST',
+              headers: {
+                'apikey': SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
+              },
+              body: JSON.stringify(batch)
+            }
+          );
+
+          if (!response.ok) {
+            throw new Error(`Upload failed: ${response.statusText}`);
+          }
+
+          uploaded += batch.length;
+          const percent = Math.round((uploaded / verses.length) * 100);
+          status.textContent = `Uploading: ${uploaded.toLocaleString()} / ${verses.length.toLocaleString()} verses (${percent}%)`;
+        }
+
+        status.className = 'status success';
+        status.textContent = `✓ ${versionNames[version]} imported successfully! (${verses.length.toLocaleString()} verses)`;
+        button.innerHTML = '✓ Imported';
+        button.style.background = '#28a745';
 
       } catch (error) {
         console.error('Upload error:', error);
+        
         status.className = 'status error';
         status.style.display = 'block';
         status.textContent = `✗ Error: ${error.message}`;
